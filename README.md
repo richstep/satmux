@@ -38,8 +38,8 @@ satmux (:8444):
 - **Persistent non-443 carrier pool (`:8444`):** Keeps 12 pre-warmed TCP connections open to a Linux VM near the satellite ground station, bypassing the cabin `:443` proxy and onboard DNS. Streams are scheduled onto the carrier with the lowest recent byte load so idle browser keepalives do not cause head-of-line queueing.
 - **0-RTT stream open (`127.0.0.1:1080` SOCKS5 / `127.0.0.1:8080` HTTP CONNECT):** Returns `OK` locally in `<1 ms` and sends `FT_OPEN` + TLS `ClientHello` in the same TCP burst, saving one full satellite RTT while preserving end-to-end TLS from the laptop.
 - **1-RTT ground fetch (`127.0.0.1:8081`):** Sends an encrypted (`BLAKE2b-512` stream + `HMAC-SHA256`) request frame over a warm carrier. The ground VM performs DNS, verified TLS 1.3, and HTTP redirects on fiber (`~2–5 ms`) and compresses plaintext responses with `zlib` before crossing the satellite link.
-- **`git` and `gh` CLI routing:** Go binaries such as `gh` ignore macOS `scutil` proxies. `satmux` exposes a `0600` local Unix socket (`/tmp/satmux-gh-tls.sock`) wired to `gh`'s `http_unix_socket` that wraps requests in verified end-to-end TLS on the laptop and tunnels them over SOCKS5, fixing already-running coding agents without restarting them.
-- **BBR + `MSS 1280`:** Ground-to-cabin sockets enable `TCP_CONGESTION=bbr` and `TCP_MAXSEG=1280`.
+- **`git` and `gh` CLI routing:** Go binaries such as `gh` ignore system proxies. `satmux` exposes a `0600` local Unix socket (`/tmp/satmux-gh-tls.sock`) wired to `gh`'s `http_unix_socket` that wraps requests in verified end-to-end TLS on the laptop and tunnels them over SOCKS5, fixing already-running coding agents without restarting them. Use `bin/satmux-macos` on macOS or `bin/satmux-linux` on Linux / Windows 11 WSL2.
+- **BBR + `MSS 1280`:** Ground-to-cabin sockets enable `TCP_CONGESTION=bbr` and `TCP_MAXSEG=1280` (Linux kernel; no-op elsewhere).
 
 ## Limits
 
@@ -63,7 +63,7 @@ Pause UDP VPNs (Tailscale/WireGuard) inflight—blocked UDP retry traffic compet
 
 With a coding agent:
 
-> Spin up a temporary Ubuntu VM near my current satellite egress IP, start `https://github.com/Th0rgal/satmux` on port `8444`, connect the local 12-carrier client, enable `bin/satmux-macos on`, and run `bin/satmux-bench`.
+> Spin up a temporary Ubuntu VM near my current satellite egress IP, start `https://github.com/Th0rgal/satmux` on port `8444`, connect the local 12-carrier client, enable routing (`bin/satmux-macos on` on macOS, or `bin/satmux-linux on` on Linux/WSL2), and run `bin/satmux-bench`.
 
 Or manually:
 
@@ -76,10 +76,27 @@ openssl rand -hex 32 > mux.psk && chmod 600 mux.psk
 scp satmux.py mux.psk root@<SERVER_IP>:/root/
 ssh root@<SERVER_IP> 'nohup env SATMUX_PSK=$(cat /root/mux.psk) python3 /root/satmux.py server --port 8444 >/var/log/satmux.log 2>&1 &'
 
-# 3. Laptop: start client + enable macOS / git / gh routing
+# 3. Laptop: start client + enable OS / git / gh routing
 SATMUX_PSK=$(cat mux.psk) python3 satmux.py client --host <SERVER_IP> --port 8444 --carriers 12 &
+# macOS:
 ./bin/satmux-macos on <SERVER_IP>
+# Linux or Windows 11 WSL2:
+./bin/satmux-linux on <SERVER_IP>
+source ~/.cache/satmux-env.sh   # WSL/Linux shells only
 ```
+
+#### Windows 11 (WSL2)
+
+Run the client **inside WSL2** (Ubuntu or similar, Python 3.9+). WSL’s localhost relay lets Windows browsers reach `127.0.0.1:1080` / `:8080` when the client listens in the distro.
+
+```bash
+# In WSL2
+SATMUX_PSK=$(cat mux.psk) python3 satmux.py client --host <SERVER_IP> --port 8444 --carriers 12 &
+./bin/satmux-linux on <SERVER_IP>
+source ~/.cache/satmux-env.sh
+```
+
+`bin/satmux-linux on` also flips the Windows user (WinINET) proxy via `powershell.exe` when available, so Edge/Chrome on the host use the tunneled ports. Prefer WSL mirrored networking (`networkingMode=mirrored` in `.wslconfig`) on recent Windows 11 builds if localhost forwarding is flaky.
 
 Benchmark or run parallel range downloads:
 
@@ -91,10 +108,13 @@ Benchmark or run parallel range downloads:
 ### 3. Teardown after landing
 
 ```bash
+# macOS
 ./bin/satmux-macos off
+# Linux / WSL2
+./bin/satmux-linux off
 ```
 
-Restores macOS Wi-Fi proxy settings, `~/.gitconfig`, `gh` `http_unix_socket`, and `launchctl` env vars, then destroy the temporary VM.
+Restores OS proxy settings (macOS Wi-Fi or Windows WinINET when configured from WSL), `~/.gitconfig`, and `gh` `http_unix_socket`, then destroy the temporary VM. Open WSL shells may still hold proxy env vars until you start a new shell or unset them.
 
 ## License
 
