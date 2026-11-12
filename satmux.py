@@ -827,7 +827,8 @@ async def run_client(
         """
         End-to-end verified TLS Unix socket bridge for GitHub CLI (`gh config set http_unix_socket ...`).
         Allows already-running coding agents (Go `gh` binaries without HTTPS_PROXY in env) to reach
-        api.github.com:443 over the 0-RTT SOCKS5 tunnel while performing full verified TLS 1.3 locally on Mac!
+        api.github.com:443 over the 0-RTT SOCKS5 tunnel while performing full verified TLS 1.3 locally
+        (macOS, Linux, or WSL2)!
         """
         up_writer = None
         try:
@@ -935,6 +936,9 @@ async def run_client(
     asyncio.create_task(keepalive_loop())
 
     if gh_sock:
+        gh_parent = os.path.dirname(gh_sock)
+        if gh_parent:
+            os.makedirs(gh_parent, exist_ok=True)
         try:
             os.unlink(gh_sock)
         except FileNotFoundError:
@@ -942,12 +946,21 @@ async def run_client(
     socks_srv = await asyncio.start_server(handle_socks5, "127.0.0.1", socks_port)
     http_srv = await asyncio.start_server(handle_http, "127.0.0.1", http_port)
     fast_srv = await asyncio.start_server(handle_fast_1rtt, "127.0.0.1", fast_port)
-    gh_srv = await asyncio.start_unix_server(handle_gh_unix_tls, gh_sock) if gh_sock else None
-    if gh_sock and os.path.exists(gh_sock):
-        os.chmod(gh_sock, 0o600)
+    gh_srv = None
+    if gh_sock:
+        try:
+            gh_srv = await asyncio.start_unix_server(handle_gh_unix_tls, gh_sock)
+            if os.path.exists(gh_sock):
+                os.chmod(gh_sock, 0o600)
+        except OSError as exc:
+            print(
+                f"[mux-v3-client] GH-TLS Unix socket unavailable ({gh_sock}): {exc} — SOCKS/HTTP still up",
+                flush=True,
+            )
+            gh_sock = None
     print(
         f"[mux-v3-client] Ready! SOCKS5=127.0.0.1:{socks_port} (0-RTT) | HTTP=127.0.0.1:{http_port} (0-RTT) | "
-        f"1-RTT-Gate=127.0.0.1:{fast_port} | GH-TLS={gh_sock} -> {server_host}:{server_port} ({num_carriers} warm BBR carriers)",
+        f"1-RTT-Gate=127.0.0.1:{fast_port} | GH-TLS={gh_sock or 'disabled'} -> {server_host}:{server_port} ({num_carriers} warm BBR carriers)",
         flush=True,
     )
     if gh_srv:
